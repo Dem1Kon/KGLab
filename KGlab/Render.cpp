@@ -8,6 +8,8 @@
 #include <iostream>
 #include <sstream>
 #include <math.h>
+#include <vector>
+#include <cctype>
 
 #ifdef _DEBUG
 #include <Debugapi.h>
@@ -29,12 +31,9 @@ struct debug_print
 } debout;
 #endif
 
-// Библиотека для разгрузки изображений
-// https://github.com/nothings/stb
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
-// Внутренняя логика "движка"
 #include "MyOGL.h"
 extern OpenGL gl;
 #include "Light.h"
@@ -42,449 +41,670 @@ Light light;
 #include "Camera.h"
 Camera camera;
 
-double A[] = { 1, 0, 0 };
-double B[] = { 4, 5, 0 };
-double C[] = { 0, 2, 0 };
-double D[] = { -5, 5, 0 };
-double E[] = { -8, 0, 0 };
-double F[] = { -5, -5, 0 };
-double G[] = { 0, -1, 0 };
-double H[] = { 4, -3, 0 };
-
-double A1[] = { 1, 0, 4 };
-double B1[] = { 4, 5, 4 };
-double C1[] = { 0, 2, 4 };
-double D1[] = { -5, 5, 4 };
-double E1[] = { -8, 0, 4 };
-double F1[] = { -5, -5, 4 };
-double G1[] = { 0, -1, 4 };
-double H1[] = { 4, -3, 4 };
-
-
+bool animateSea = false;
+float seaTime = 0.0f;
 bool texturing = true;
 bool lightning = true;
+bool umbrellasOpen = true;
+float umbrellaAnim = 1.0f;   // 0 = закрыт, 1 = открыт
+float umbrellaTarget = 1.0f; // куда стремимся
 bool alpha = false;
 
-double dx = 5 - (-1);
-double dy = -5 - (-8);
-double len = sqrt(dx * dx + dy * dy);
+// Глобальные данные для рельефа пляжа (статичные, вычисляются один раз)
+std::vector<std::vector<float>> sandHeights;
+float sandXMin = -200.0f, sandXMax = 200.0f;   // расширенный диапазон
+float sandYMin = -200.0f, sandYMax = 100.0f;
+float sandStep = 1.5f;
+int sandNx = 0, sandNy = 0;
 
-double cx = (-1 + 5) * 0.5;
-double cy = (-8 + -5) * 0.5;
-
-double dirx = dx / len;
-double diry = dy / len;
-
-double perpx = -diry;
-double perpy = dirx;
-
-double R = len * 0.5;
-double nx = -dy / len;
-double ny = dx / len;
+// Текстура песка и текстура неба
+GLuint texId;
+GLuint skyboxTexId = 0;
+GLuint skyboxTex[6] = { 0 };
 
 
-double* setN(double* A, double* B, double* C)
+struct Umbrella
 {
-    static double N[3];
+    float x;
+    float y;
+    float z;
+    float radius;
+    float height;
+};
 
-    double u[3] = { B[0] - A[0], B[1] - A[1], B[2] - A[2] };
-    double v[3] = { C[0] - A[0], C[1] - A[1], C[2] - A[2] };
+std::vector<Umbrella> umbrellas;
 
-    N[0] = u[1] * v[2] - u[2] * v[1];
-    N[1] = u[2] * v[0] - u[0] * v[2];
-    N[2] = u[0] * v[1] - u[1] * v[0];
+enum
+{
+    SKY_FRONT = 0,
+    SKY_BACK,
+    SKY_LEFT,
+    SKY_RIGHT,
+    SKY_TOP,
+    SKY_BOTTOM
+};
 
-    double l = sqrt(N[0] * N[0] + N[1] * N[1] + N[2] * N[2]);
-    if (l != 0) {
-        N[0] /= l;
-        N[1] /= l;
-        N[2] /= l;
-    }
-
-    return N;
-}
-
-void shapeTop() {
-    // Вычисляем bounding box вершин основания (можно вынести в initRender для оптимизации)
-    double minX = A[0], maxX = A[0], minY = A[1], maxY = A[1];
-    double* verts[] = { A, B, C, D, E, F, G, H };
-    for (int i = 0; i < 8; ++i) {
-        if (verts[i][0] < minX) minX = verts[i][0];
-        if (verts[i][0] > maxX) maxX = verts[i][0];
-        if (verts[i][1] < minY) minY = verts[i][1];
-        if (verts[i][1] > maxY) maxY = verts[i][1];
-    }
-    double rangeX = maxX - minX;
-    double rangeY = maxY - minY;
-    if (rangeX == 0) rangeX = 1;
-    if (rangeY == 0) rangeY = 1;
-
-    glBegin(GL_TRIANGLES);
-    glNormal3d(0, 0, -1);
-
-    // Треугольник A-B-C
-    glTexCoord2d((A[0] - minX) / rangeX, (A[1] - minY) / rangeY); glVertex3dv(A);
-    glTexCoord2d((B[0] - minX) / rangeX, (B[1] - minY) / rangeY); glVertex3dv(B);
-    glTexCoord2d((C[0] - minX) / rangeX, (C[1] - minY) / rangeY); glVertex3dv(C);
-
-    // A-C-D
-    glTexCoord2d((A[0] - minX) / rangeX, (A[1] - minY) / rangeY); glVertex3dv(A);
-    glTexCoord2d((C[0] - minX) / rangeX, (C[1] - minY) / rangeY); glVertex3dv(C);
-    glTexCoord2d((D[0] - minX) / rangeX, (D[1] - minY) / rangeY); glVertex3dv(D);
-
-    // A-D-E
-    glTexCoord2d((A[0] - minX) / rangeX, (A[1] - minY) / rangeY); glVertex3dv(A);
-    glTexCoord2d((D[0] - minX) / rangeX, (D[1] - minY) / rangeY); glVertex3dv(D);
-    glTexCoord2d((E[0] - minX) / rangeX, (E[1] - minY) / rangeY); glVertex3dv(E);
-
-    // A-E-F
-    glTexCoord2d((A[0] - minX) / rangeX, (A[1] - minY) / rangeY); glVertex3dv(A);
-    glTexCoord2d((E[0] - minX) / rangeX, (E[1] - minY) / rangeY); glVertex3dv(E);
-    glTexCoord2d((F[0] - minX) / rangeX, (F[1] - minY) / rangeY); glVertex3dv(F);
-
-    // A-F-G
-    glTexCoord2d((A[0] - minX) / rangeX, (A[1] - minY) / rangeY); glVertex3dv(A);
-    glTexCoord2d((F[0] - minX) / rangeX, (F[1] - minY) / rangeY); glVertex3dv(F);
-    glTexCoord2d((G[0] - minX) / rangeX, (G[1] - minY) / rangeY); glVertex3dv(G);
-
-    // A-G-H
-    glTexCoord2d((A[0] - minX) / rangeX, (A[1] - minY) / rangeY); glVertex3dv(A);
-    glTexCoord2d((G[0] - minX) / rangeX, (G[1] - minY) / rangeY); glVertex3dv(G);
-    glTexCoord2d((H[0] - minX) / rangeX, (H[1] - minY) / rangeY); glVertex3dv(H);
-
-    glEnd();
-}
-
-void shapeBot() {
-    double minX = A1[0], maxX = A1[0], minY = A1[1], maxY = A1[1];
-    double* verts[] = { A1, B1, C1, D1, E1, F1, G1, H1 };
-    for (int i = 0; i < 8; ++i) {
-        if (verts[i][0] < minX) minX = verts[i][0];
-        if (verts[i][0] > maxX) maxX = verts[i][0];
-        if (verts[i][1] < minY) minY = verts[i][1];
-        if (verts[i][1] > maxY) maxY = verts[i][1];
-    }
-    double rangeX = maxX - minX;
-    double rangeY = maxY - minY;
-    if (rangeX == 0) rangeX = 1;
-    if (rangeY == 0) rangeY = 1;
-
-    glBegin(GL_TRIANGLES);
-    glNormal3d(0, 0, 1);
-
-    glTexCoord2d((A1[0] - minX) / rangeX, (A1[1] - minY) / rangeY); glVertex3dv(A1);
-    glTexCoord2d((B1[0] - minX) / rangeX, (B1[1] - minY) / rangeY); glVertex3dv(B1);
-    glTexCoord2d((C1[0] - minX) / rangeX, (C1[1] - minY) / rangeY); glVertex3dv(C1);
-
-    glTexCoord2d((A1[0] - minX) / rangeX, (A1[1] - minY) / rangeY); glVertex3dv(A1);
-    glTexCoord2d((C1[0] - minX) / rangeX, (C1[1] - minY) / rangeY); glVertex3dv(C1);
-    glTexCoord2d((D1[0] - minX) / rangeX, (D1[1] - minY) / rangeY); glVertex3dv(D1);
-
-    glTexCoord2d((A1[0] - minX) / rangeX, (A1[1] - minY) / rangeY); glVertex3dv(A1);
-    glTexCoord2d((D1[0] - minX) / rangeX, (D1[1] - minY) / rangeY); glVertex3dv(D1);
-    glTexCoord2d((E1[0] - minX) / rangeX, (E1[1] - minY) / rangeY); glVertex3dv(E1);
-
-    glTexCoord2d((A1[0] - minX) / rangeX, (A1[1] - minY) / rangeY); glVertex3dv(A1);
-    glTexCoord2d((E1[0] - minX) / rangeX, (E1[1] - minY) / rangeY); glVertex3dv(E1);
-    glTexCoord2d((F1[0] - minX) / rangeX, (F1[1] - minY) / rangeY); glVertex3dv(F1);
-
-    glTexCoord2d((A1[0] - minX) / rangeX, (A1[1] - minY) / rangeY); glVertex3dv(A1);
-    glTexCoord2d((F1[0] - minX) / rangeX, (F1[1] - minY) / rangeY); glVertex3dv(F1);
-    glTexCoord2d((G1[0] - minX) / rangeX, (G1[1] - minY) / rangeY); glVertex3dv(G1);
-
-    glTexCoord2d((A1[0] - minX) / rangeX, (A1[1] - minY) / rangeY); glVertex3dv(A1);
-    glTexCoord2d((G1[0] - minX) / rangeX, (G1[1] - minY) / rangeY); glVertex3dv(G1);
-    glTexCoord2d((H1[0] - minX) / rangeX, (H1[1] - minY) / rangeY); glVertex3dv(H1);
-
-    glEnd();
-}
-
-void shapeSides() {
-    glBegin(GL_QUADS);
-
-    // Грань A-B
-    auto N1 = setN(A1, A, B1);
-    glNormal3dv(N1);
-    glTexCoord2d(0, 0); glVertex3dv(A);
-    glTexCoord2d(1, 0); glVertex3dv(B);
-    glTexCoord2d(1, 1); glVertex3dv(B1);
-    glTexCoord2d(0, 1); glVertex3dv(A1);
-
-    // Грань B-C
-    auto N2 = setN(B1, B, C1);
-    glNormal3dv(N2);
-    glTexCoord2d(0, 0); glVertex3dv(B);
-    glTexCoord2d(1, 0); glVertex3dv(C);
-    glTexCoord2d(1, 1); glVertex3dv(C1);
-    glTexCoord2d(0, 1); glVertex3dv(B1);
-
-    // Грань C-D
-    auto N3 = setN(C1, C, D1);
-    glNormal3dv(N3);
-    glTexCoord2d(0, 0); glVertex3dv(C);
-    glTexCoord2d(1, 0); glVertex3dv(D);
-    glTexCoord2d(1, 1); glVertex3dv(D1);
-    glTexCoord2d(0, 1); glVertex3dv(C1);
-
-    // Грань D-E
-    auto N4 = setN(D1, D, E1);
-    glNormal3dv(N4);
-    glTexCoord2d(0, 0); glVertex3dv(D);
-    glTexCoord2d(1, 0); glVertex3dv(E);
-    glTexCoord2d(1, 1); glVertex3dv(E1);
-    glTexCoord2d(0, 1); glVertex3dv(D1);
-
-    // Грань E-F
-    auto N5 = setN(E1, E, F1);
-    glNormal3dv(N5);
-    glTexCoord2d(0, 0); glVertex3dv(E);
-    glTexCoord2d(1, 0); glVertex3dv(F);
-    glTexCoord2d(1, 1); glVertex3dv(F1);
-    glTexCoord2d(0, 1); glVertex3dv(E1);
-
-    // Грань F-G
-    auto N6 = setN(F1, F, G1);
-    glNormal3dv(N6);
-    glTexCoord2d(0, 0); glVertex3dv(F);
-    glTexCoord2d(1, 0); glVertex3dv(G);
-    glTexCoord2d(1, 1); glVertex3dv(G1);
-    glTexCoord2d(0, 1); glVertex3dv(F1);
-
-    // Грань G-H
-    auto N7 = setN(G1, G, H1);
-    glNormal3dv(N7);
-    glTexCoord2d(0, 0); glVertex3dv(G);
-    glTexCoord2d(1, 0); glVertex3dv(H);
-    glTexCoord2d(1, 1); glVertex3dv(H1);
-    glTexCoord2d(0, 1); glVertex3dv(G1);
-
-    // Грань H-A
-    auto N8 = setN(H1, H, A1);
-    glNormal3dv(N8);
-    glTexCoord2d(0, 0); glVertex3dv(H);
-    glTexCoord2d(1, 0); glVertex3dv(A);
-    glTexCoord2d(1, 1); glVertex3dv(A1);
-    glTexCoord2d(0, 1); glVertex3dv(H1);
-
-    glEnd();
-}
-
-void shape() {
-    shapeTop();
-    shapeBot();
-    shapeSides();
-}
-
-// Переключение режимов освещения, текстурирования, альфа-наложения
+// Переключение режимов
 void switchModes(OpenGL* sender, KeyEventArg arg)
 {
-    // Конвертируем код клавиши в букву
-    auto key = LOWORD(MapVirtualKeyA(arg.key, MAPVK_VK_TO_CHAR));
-
+    char key = tolower(LOWORD(MapVirtualKeyA(arg.key, MAPVK_VK_TO_CHAR)));
     switch (key)
     {
-    case 'L':
-        lightning = !lightning;
-        break;
-    case 'T':
-        texturing = !texturing;
-        break;
-    case 'A':
-        alpha = !alpha;
+    case 'l': lightning = !lightning; break;
+    case 't': texturing = !texturing; break;
+    case 'a': alpha = !alpha; break;
+    case 'm': animateSea = !animateSea; break; 
+    case 'c':
+        umbrellasOpen = !umbrellasOpen;
+        umbrellaTarget = umbrellasOpen ? 1.0f : 0.0f;
         break;
     }
 }
 
-// Текстовый прямоугольник в верхнем правом углу.
-// OGL не предоставляет возможности для хранения текста;
-// внутри этого класса создается картинка с текстом (через GDI),
-// в виде текстуры накладывается на прямоугольник и рисуется на экране.
-// Это самый простой, но очень неэффективный способ написать что-либо на экране.
 GuiTextRectangle text;
 
-// ID для текстуры
-GLuint texId;
+// ================= ФУНКЦИИ РИСОВАНИЯ =================
+void DrawSand() {
+    if (sandHeights.empty()) return;
 
-// Выполняется один раз перед первым рендером
+    glColor3f(0.5f, 0.5f, 0.5f);   // белый цвет – текстура будет видна полностью
+
+    glBegin(GL_TRIANGLES);
+    for (int i = 0; i < sandNx - 1; ++i) {
+        float x0 = sandXMin + i * sandStep;
+        float x1 = sandXMin + (i + 1) * sandStep;
+        for (int j = 0; j < sandNy - 1; ++j) {
+            float y0 = sandYMin + j * sandStep;
+            float y1 = sandYMin + (j + 1) * sandStep;
+            float z00 = sandHeights[i][j];
+            float z10 = sandHeights[i + 1][j];
+            float z01 = sandHeights[i][j + 1];
+            float z11 = sandHeights[i + 1][j + 1];
+
+            // текстурные координаты (масштаб 0.1)
+            glTexCoord2f(x0 * 0.1f, y0 * 0.1f); glVertex3f(x0, y0, z00);
+            glTexCoord2f(x1 * 0.1f, y0 * 0.1f); glVertex3f(x1, y0, z10);
+            glTexCoord2f(x0 * 0.1f, y1 * 0.1f); glVertex3f(x0, y1, z01);
+
+            glTexCoord2f(x1 * 0.1f, y1 * 0.1f); glVertex3f(x1, y1, z11);
+            glTexCoord2f(x0 * 0.1f, y1 * 0.1f); glVertex3f(x0, y1, z01);
+            glTexCoord2f(x1 * 0.1f, y0 * 0.1f); glVertex3f(x1, y0, z10);
+        }
+    }
+    glEnd();
+}
+
+void DrawSea() {
+    // Море покрывает только область X от -20 до 10 (дно + наклонный пляж)
+    float seaXMin = -200.0f;
+    float seaXMax = 100.0f;
+    float seaYMin = sandYMin;
+    float seaYMax = sandYMax;
+    float seaStep = 1.0f;
+    float baseZ = -0.05f;   // уровень воды (чуть выше дна)
+
+    int nx = (int)((seaXMax - seaXMin) / seaStep) + 1;
+    int ny = (int)((seaYMax - seaYMin) / seaStep) + 1;
+
+    if (alpha) {
+        glColor4f(0.2f, 0.5f, 0.8f, 0.7f);
+    }
+    else {
+        glColor3f(0.2f, 0.5f, 0.8f);
+    }
+
+    glDisable(GL_TEXTURE_2D);
+
+    glBegin(GL_TRIANGLES);
+    for (int i = 0; i < nx - 1; ++i) {
+        float x0 = seaXMin + i * seaStep;
+        float x1 = seaXMin + (i + 1) * seaStep;
+        for (int j = 0; j < ny - 1; ++j) {
+            float y0 = seaYMin + j * seaStep;
+            float y1 = seaYMin + (j + 1) * seaStep;
+
+            float z00 = baseZ, z10 = baseZ, z01 = baseZ, z11 = baseZ;
+            if (animateSea) {
+                float freq = 0.4f;
+                float amp = 0.15f;
+                z00 += amp * sinf(x0 * freq + seaTime) * cosf(y0 * freq);
+                z10 += amp * sinf(x1 * freq + seaTime) * cosf(y0 * freq);
+                z01 += amp * sinf(x0 * freq + seaTime) * cosf(y1 * freq);
+                z11 += amp * sinf(x1 * freq + seaTime) * cosf(y1 * freq);
+            }
+
+            glVertex3f(x0, y0, z00);
+            glVertex3f(x1, y0, z10);
+            glVertex3f(x0, y1, z01);
+
+            glVertex3f(x1, y1, z11);
+            glVertex3f(x0, y1, z01);
+            glVertex3f(x1, y0, z10);
+        }
+    }
+    glEnd();
+
+    glEnable(GL_TEXTURE_2D);
+}
+
+void DrawUmbrella()
+{
+    const int poleSegments = 12;
+    const int roofSegments = 12;
+
+    for (const auto& u : umbrellas)
+    {
+        //
+        // Ножка
+        //
+        float poleRadius = 0.06f;
+
+        glColor3f(0.45f, 0.25f, 0.10f);
+
+        for (int i = 0; i < poleSegments; i++)
+        {
+            float a1 = 2.0f * 3.1415926f * i / poleSegments;
+            float a2 = 2.0f * 3.1415926f * (i + 1) / poleSegments;
+
+            float x1 = cosf(a1) * poleRadius;
+            float y1 = sinf(a1) * poleRadius;
+
+            float x2 = cosf(a2) * poleRadius;
+            float y2 = sinf(a2) * poleRadius;
+
+            glBegin(GL_QUADS);
+
+            glNormal3f(cosf(a1), sinf(a1), 0);
+
+            glVertex3f(u.x + x1, u.y + y1, u.z);
+            glVertex3f(u.x + x2, u.y + y2, u.z);
+            glVertex3f(u.x + x2, u.y + y2, u.z + u.height);
+            glVertex3f(u.x + x1, u.y + y1, u.z + u.height);
+
+            glEnd();
+        }
+
+        //
+        // Крыша
+        //
+        float roofZ = u.z + u.height;
+        float openFactor = umbrellasOpen ? 1.0f : 0.2f;
+
+        float anim = umbrellaAnim;
+
+        // радиус "раскрытия"
+        float radius = u.radius * (0.3f + 0.7f * anim);
+
+        // высота купола
+        float roofTop = roofZ + 0.1f + 0.5f * anim;
+
+
+        glColor3f(
+            0.8f,
+            0.15f + (u.x * 0.03f),
+            0.1f + fabs(sinf(u.y))
+        );
+
+        glBegin(GL_TRIANGLES);
+
+        for (int i = 0; i < roofSegments; i++)
+        {
+            float a1 = 2.0f * 3.1415926f * i / roofSegments;
+            float a2 = 2.0f * 3.1415926f * (i + 1) / roofSegments;
+
+            float x1 = u.x + cosf(a1) * radius;
+            float y1 = u.y + sinf(a1) * radius;
+
+            float x2 = u.x + cosf(a2) * radius;
+            float y2 = u.y + sinf(a2) * radius;
+
+            glNormal3f(0, 0, 1);
+
+            glVertex3f(u.x, u.y, roofTop);
+            glVertex3f(x1, y1, roofZ);
+            glVertex3f(x2, y2, roofZ);
+        }
+
+        glEnd();
+    }
+}
+
+// ================= SKYBOX (крест 4x3) =================
+// ================= SKYBOX (крест 4x3) =================
+void loadSkyboxTexture(const char* path) {
+    int width, height, n;
+    unsigned char* data = stbi_load(path, &width, &height, &n, 4);
+    if (!data) {
+        debout << "Failed to load skybox texture: " << path << "\n";
+        return;
+    }
+
+    debout << "Loaded " << path << ": " << width << "x" << height << ", channels " << n << "\n";
+
+    // Проверяем, что это крест 4x3
+    if (width % 4 != 0 || height % 3 != 0) {
+        debout << "Skybox texture is not a 4x3 cross layout (width%4=" << width % 4
+            << ", height%3=" << height % 3 << ")\n";
+        stbi_image_free(data);
+        return;
+    }
+
+    int sqW = width / 4;
+    int sqH = height / 3;
+    debout << "Square size: " << sqW << "x" << sqH << "\n";
+
+    // Создаём текстуру
+    glGenTextures(1, &skyboxTexId);
+    glBindTexture(GL_TEXTURE_2D, skyboxTexId);
+
+    // Переворачиваем по Y (stbi загружает сверху вниз)
+    unsigned char* flipped = new unsigned char[width * height * 4];
+    for (int row = 0; row < height; ++row) {
+        memcpy(flipped + row * width * 4,
+            data + (height - 1 - row) * width * 4,
+            width * 4);
+    }
+
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0,
+        GL_RGBA, GL_UNSIGNED_BYTE, flipped);
+    delete[] flipped;
+    stbi_image_free(data);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    debout << "Skybox texture loaded successfully, ID=" << skyboxTexId << "\n";
+    MessageBoxA(NULL,
+        skyboxTexId ? "skybox loaded" : "skybox failed",
+        "debug",
+        MB_OK);
+}
+
+void DrawSkybox()
+{
+    float s = 80.0f;
+
+    glPushAttrib(GL_ENABLE_BIT);
+
+    glDisable(GL_LIGHTING);
+    glDisable(GL_BLEND);
+
+    glDepthMask(GL_FALSE);
+
+    glEnable(GL_TEXTURE_2D);
+
+    glColor3f(1.0f, 1.0f, 1.0f);
+
+    //
+    // FRONT
+    //
+    glBindTexture(GL_TEXTURE_2D, skyboxTex[SKY_FRONT]);
+
+    glBegin(GL_QUADS);
+    glTexCoord2f(0, 0); glVertex3f(-s, -s, -s);
+    glTexCoord2f(1, 0); glVertex3f(s, -s, -s);
+    glTexCoord2f(1, 1); glVertex3f(s, s, -s);
+    glTexCoord2f(0, 1); glVertex3f(-s, s, -s);
+    glEnd();
+
+    //
+    // BACK
+    //
+    glBindTexture(GL_TEXTURE_2D, skyboxTex[SKY_BACK]);
+
+    glBegin(GL_QUADS);
+    glTexCoord2f(0, 0); glVertex3f(s, -s, s);
+    glTexCoord2f(1, 0); glVertex3f(-s, -s, s);
+    glTexCoord2f(1, 1); glVertex3f(-s, s, s);
+    glTexCoord2f(0, 1); glVertex3f(s, s, s);
+    glEnd();
+
+    //
+    // LEFT
+    //
+    glBindTexture(GL_TEXTURE_2D, skyboxTex[SKY_LEFT]);
+
+    glBegin(GL_QUADS);
+    glTexCoord2f(0, 0); glVertex3f(-s, -s, s);
+    glTexCoord2f(1, 0); glVertex3f(-s, -s, -s);
+    glTexCoord2f(1, 1); glVertex3f(-s, s, -s);
+    glTexCoord2f(0, 1); glVertex3f(-s, s, s);
+    glEnd();
+
+    //
+    // RIGHT
+    //
+    glBindTexture(GL_TEXTURE_2D, skyboxTex[SKY_RIGHT]);
+
+    glBegin(GL_QUADS);
+    glTexCoord2f(0, 0); glVertex3f(s, -s, -s);
+    glTexCoord2f(1, 0); glVertex3f(s, -s, s);
+    glTexCoord2f(1, 1); glVertex3f(s, s, s);
+    glTexCoord2f(0, 1); glVertex3f(s, s, -s);
+    glEnd();
+
+    //
+    // TOP
+    //
+    glBindTexture(GL_TEXTURE_2D, skyboxTex[SKY_TOP]);
+
+    glBegin(GL_QUADS);
+    glTexCoord2f(0, 0); glVertex3f(-s, s, -s);
+    glTexCoord2f(1, 0); glVertex3f(s, s, -s);
+    glTexCoord2f(1, 1); glVertex3f(s, s, s);
+    glTexCoord2f(0, 1); glVertex3f(-s, s, s);
+    glEnd();
+
+    //
+    // BOTTOM
+    //
+    glBindTexture(GL_TEXTURE_2D, skyboxTex[SKY_BOTTOM]);
+
+    glBegin(GL_QUADS);
+    glTexCoord2f(0, 0); glVertex3f(-s, -s, s);
+    glTexCoord2f(1, 0); glVertex3f(s, -s, s);
+    glTexCoord2f(1, 1); glVertex3f(s, -s, -s);
+    glTexCoord2f(0, 1); glVertex3f(-s, -s, -s);
+    glEnd();
+
+    glDepthMask(GL_TRUE);
+
+    glPopAttrib();
+}
+
+GLuint LoadTexture(const char* fileName)
+{
+    int w, h, n;
+
+    unsigned char* data = stbi_load(fileName, &w, &h, &n, 4);
+
+    if (!data)
+    {
+        std::cout << "Cannot load " << fileName << std::endl;
+        return 0;
+    }
+
+    for (int y = 0; y < h / 2; y++)
+    {
+        for (int x = 0; x < w * 4; x++)
+        {
+            std::swap(
+                data[y * w * 4 + x],
+                data[(h - 1 - y) * w * 4 + x]
+            );
+        }
+    }
+
+    GLuint tex;
+
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+
+    glTexImage2D(
+        GL_TEXTURE_2D,
+        0,
+        GL_RGBA,
+        w,
+        h,
+        0,
+        GL_RGBA,
+        GL_UNSIGNED_BYTE,
+        data
+    );
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+
+    stbi_image_free(data);
+
+    return tex;
+}
+
+// ===================================================
+
 void initRender()
 {
-    //==============НАСТРОЙКА ТЕКСТУР================
-    // 4 байта на хранение пикселя
+    // Настройка текстур песка
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-
-    // Генерируем ID текстуры
     glGenTextures(1, &texId);
-
-    // Делаем текущую текстуру активной
     glBindTexture(GL_TEXTURE_2D, texId);
 
     int x, y, n;
-
-    // Загружаем картинку
-    // см. #include "stb_image.h"
     unsigned char* data = stbi_load("texture.png", &x, &y, &n, 4);
-    // x - ширина изображения
-    // y - высота изображения
-    // n - количество каналов
-    // 4 - нужное нам количество каналов
-    // Пиксели будут хранится в памяти [R-G-B-A]-[R-G-B-A]-[.....
-    //  по 4 байта на пиксель - по байту на канал
-    // Пустые каналы будут равны 255
-
-    // Картинка хранится в памяти перевернутой
-    // так как ее начало в левом верхнем углу;
-    // по этому мы ее переворачиваем -
-    // меняем первую строку с последней,
-    // вторую с предпоследней, и.т.д.
-    unsigned char* _tmp = new unsigned char[x * 4];
-    for (int i = 0; i < y / 2; ++i)
-    {
-        std::memcpy(_tmp, data + i * x * 4, x * 4);                       // переносим строку i в tmp
-        std::memcpy(data + i * x * 4, data + (y - 1 - i) * x * 4, x * 4); // (y-1-i)я строка -> iя строка
-        std::memcpy(data + (y - 1 - i) * x * 4, _tmp, x * 4);             // tmp -> (y-1-i)я строка
+    if (data) {
+        unsigned char* _tmp = new unsigned char[x * 4];
+        for (int i = 0; i < y / 2; ++i) {
+            std::memcpy(_tmp, data + i * x * 4, x * 4);
+            std::memcpy(data + i * x * 4, data + (y - 1 - i) * x * 4, x * 4);
+            std::memcpy(data + (y - 1 - i) * x * 4, _tmp, x * 4);
+        }
+        delete[] _tmp;
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, x, y, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+        stbi_image_free(data);
     }
-    delete[] _tmp;
-
-    // Загрузка изображения в видеопамять
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, x, y, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
-
-    // Выгрузка изображения из оперативной памяти
-    stbi_image_free(data);
-
-    // Настройка режима наложения текстур
     glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
-    // GL_REPLACE -- полная замена политога текстурой
-    // Настройка тайлинга
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-
-    // Настройка фильтрации
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    //======================================================
 
-    //================НАСТРОЙКА КАМЕРЫ======================
+    // Генерация рельефа песка с тремя зонами:
+    // - X = -20..-10 : дно (горизонтально, Z = -1.2)
+    // - X = -10..10  : наклонный пляж (Z от -1.2 до 0.6)
+    // - X = 10..20   : суша (горизонтально, Z = 0.6)
+    float bottomHeight = -1.2f;
+    float shoreHeight = 0.6f;
+    float tiltStartX = -10.0f;
+    float tiltEndX = 10.0f;
+
+    sandNx = (int)((sandXMax - sandXMin) / sandStep) + 1;
+    sandNy = (int)((sandYMax - sandYMin) / sandStep) + 1;
+    sandHeights.assign(sandNx, std::vector<float>(sandNy, 0.0f));
+
+    for (int i = 0; i < sandNx; ++i) {
+        float x = sandXMin + i * sandStep;
+        float baseZ;
+        if (x < tiltStartX) {
+            baseZ = bottomHeight;
+        }
+        else if (x > tiltEndX) {
+            baseZ = shoreHeight;
+        }
+        else {
+            // линейная интерполяция от bottomHeight до shoreHeight
+            float t = (x - tiltStartX) / (tiltEndX - tiltStartX);
+            baseZ = bottomHeight * (1 - t) + shoreHeight * t;
+        }
+
+        for (int j = 0; j < sandNy; ++j) {
+            float y = sandYMin + j * sandStep;
+            // мелкие неровности
+            float noise = 0.1f * sinf(x * 0.8f) * cosf(y * 0.5f)
+                + 0.05f * sinf(y * 1.2f + 1.0f);
+            float z = baseZ + noise;
+            // ограничения
+            if (z > 0.8f) z = 0.8f;
+            if (z < -1.4f) z = -1.4f;
+            sandHeights[i][j] = z;
+        }
+    }
+
+    srand(12345);
+
+    const int umbrellaCount = 60;
+    const float minDistance = 4.0f;
+
+    for (int i = 0; i < umbrellaCount;)
+    {
+        Umbrella u;
+
+        u.x = 12.0f + (rand() % 10000) / 10000.0f *50.0f;
+        u.y = -100.0f + (rand() % 10000) / 10000.0f * 200.0f;
+
+        bool tooClose = false;
+
+        for (const auto& other : umbrellas)
+        {
+            float dx = u.x - other.x;
+            float dy = u.y - other.y;
+
+            if (dx * dx + dy * dy < minDistance * minDistance)
+            {
+                tooClose = true;
+                break;
+            }
+        }
+
+        if (tooClose)
+            continue;
+
+        int ix = (int)((u.x - sandXMin) / sandStep);
+        int iy = (int)((u.y - sandYMin) / sandStep);
+
+        if (ix < 0)
+            ix = 0;
+        if (ix >= sandNx)
+            ix = sandNx - 1;
+
+        if (iy < 0)
+            iy = 0;
+        if (iy >= sandNy)
+            iy = sandNy - 1;
+
+        u.z = sandHeights[ix][iy];
+
+        u.radius = 0.8f + (rand() % 1000) / 1000.0f * 0.6f;
+        u.height = 1.8f + (rand() % 1000) / 1000.0f * 0.5f;
+
+        umbrellas.push_back(u);
+
+        ++i;
+    }
+
+    // Настройка камеры
     camera.caclulateCameraPos();
+    camera.setPosition(0.0, -12.0, 18.0);
 
-    // Привязываем камеру к событиям "движка"
     gl.WheelEvent.reaction(&camera, &Camera::Zoom);
     gl.MouseMovieEvent.reaction(&camera, &Camera::MouseMovie);
     gl.MouseLeaveEvent.reaction(&camera, &Camera::MouseLeave);
     gl.MouseLdownEvent.reaction(&camera, &Camera::MouseStartDrag);
     gl.MouseLupEvent.reaction(&camera, &Camera::MouseStopDrag);
-    //==============НАСТРОЙКА СВЕТА===========================
-    // Привязываем свет к событиям "движка"
+
+    // Настройка света
     gl.MouseMovieEvent.reaction(&light, &Light::MoveLight);
     gl.KeyDownEvent.reaction(&light, &Light::StartDrug);
     gl.KeyUpEvent.reaction(&light, &Light::StopDrug);
-    //========================================================
-    //====================Прочее==============================
+
     gl.KeyDownEvent.reaction(switchModes);
     text.setSize(512, 180);
-    //========================================================
+    glLightModeli(GL_LIGHT_MODEL_TWO_SIDE, GL_TRUE);
 
-    camera.setPosition(2, 1.5, 1.5);
+    skyboxTex[SKY_FRONT] = LoadTexture("top.png");
+    skyboxTex[SKY_BACK] = LoadTexture("bottom.png");
+    skyboxTex[SKY_LEFT] = LoadTexture("right.png");
+    skyboxTex[SKY_RIGHT] = LoadTexture("left.png");
+    skyboxTex[SKY_TOP] = LoadTexture("front.png");
+    skyboxTex[SKY_BOTTOM] = LoadTexture("back.png");
 }
 
 void Render(double delta_time)
 {
     glEnable(GL_DEPTH_TEST);
+    glEnable(GL_NORMALIZE);
 
-    // Настройка камеры и света
-    if (gl.isKeyPressed('F')) // если нажата F - свет из камеры
-    {
+    if (gl.isKeyPressed('F'))
         light.SetPosition(camera.x(), camera.y(), camera.z());
+
+    if (animateSea) {
+        seaTime += delta_time * 2.0f;
     }
+
     camera.SetUpCamera();
     light.SetUpLight();
 
-    // Рисуем оси
+    // Рисуем skybox (он должен быть позади всей сцены, используется отдельная текстура)
+    DrawSkybox();
+
     gl.DrawAxes();
 
     glDisable(GL_LIGHTING);
     glDisable(GL_TEXTURE_2D);
     glDisable(GL_BLEND);
 
-    // Переключаем режимы (см void switchModes(OpenGL *sender, KeyEventArg arg))
-    if (lightning)
-        glEnable(GL_LIGHTING);
-    if (texturing)
-    {
+    if (lightning) glEnable(GL_LIGHTING);
+    if (texturing) {
         glEnable(GL_TEXTURE_2D);
-        glBindTexture(GL_TEXTURE_2D, texId); // Сбрасываем текущую текстуру
+        glBindTexture(GL_TEXTURE_2D, texId);
     }
-
-    if (alpha)
-    {
+    if (alpha) {
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     }
 
-    //=============НАСТРОЙКА МАТЕРИАЛА==============
-
-    // Настройка материала, все что рисуется ниже будет иметь этот материал.
-    // Массивы с настройками материала
-    float amb[] = { 0, 0, 0, 0 };
-    float dif[] = { 1, 1, 1, 1 };
-    float spec[] = { 1, 1, 1, 1 };
-    float sh = 0.1f * 256;
-
-    // Фоновая
+    float amb[] = { 0.2f, 0.2f, 0.2f, 1.0f };
+    float dif[] = { 0.8f, 0.8f, 0.8f, 1.0f };
+    float spec[] = { 0.5f, 0.5f, 0.5f, 1.0f };
+    float sh = 0.2f * 256.0f;
     glMaterialfv(GL_FRONT, GL_AMBIENT, amb);
-    // Дифузная
     glMaterialfv(GL_FRONT, GL_DIFFUSE, dif);
-    // Зеркальная
     glMaterialfv(GL_FRONT, GL_SPECULAR, spec);
-    // Размер блика
     glMaterialf(GL_FRONT, GL_SHININESS, sh);
+    glShadeModel(GL_SMOOTH);
 
-    // Сглаживание освещения
-    glShadeModel(GL_SMOOTH); // закраска по Гуро
-    //(GL_SMOOTH - плоская закраска)
+    glEnable(GL_COLOR_MATERIAL);
+    glColorMaterial(GL_FRONT, GL_AMBIENT_AND_DIFFUSE);
 
-//============ РИСОВАТЬ ТУТ ==============
 
-    shape();
-    //===============================================
+    float speed = 2.5f; // скорость раскрытия
 
-    // Рисуем источник света
+    if (umbrellaAnim < umbrellaTarget)
+    {
+        umbrellaAnim += speed * delta_time;
+        if (umbrellaAnim > umbrellaTarget)
+            umbrellaAnim = umbrellaTarget;
+    }
+    else if (umbrellaAnim > umbrellaTarget)
+    {
+        umbrellaAnim -= speed * delta_time;
+        if (umbrellaAnim < umbrellaTarget)
+            umbrellaAnim = umbrellaTarget;
+    }
+
+    // ============= РИСУЕМ СЦЕНУ =============
+    DrawSand();
+    DrawSea();
+    DrawUmbrella();
+    // ========================================
+
     light.DrawLightGizmo();
 
-    //================Сообщение в верхнем левом углу=======================
-
-    // Переключаемся на матрицу проекции
+    // 2D текст
     glMatrixMode(GL_PROJECTION);
-    // Сохраняем текущую матрицу проекции с перспективным преобразованием
     glPushMatrix();
-    // Загружаем единичную матрицу в матрицу проекции
     glLoadIdentity();
-
-    // Устанавливаем матрицу параллельной проекции
     glOrtho(0, gl.getWidth() - 1, 0, gl.getHeight() - 1, 0, 1);
-
-    // Переключаемся на матрицу MODELVIEW
     glMatrixMode(GL_MODELVIEW);
-    // Сохраняем матрицу
     glPushMatrix();
-    // Сбрасываем все трансформации и настройки камеры загрузкой единичной матрицы
     glLoadIdentity();
-
-    // Нарисованное тут находится в 2D системе координат
-    // Нижний левый угол окна - точка (0,0)
-    // Верхний правый угол (ширина_окна - 1, высота_окна - 1)
 
     std::wstringstream ss;
-    ss << std::fixed << std::setprecision(3) << "T - " << (texturing ? L"[вкл]выкл" : L"вкл[выкл]") << L" текстур\n"
+    ss << std::fixed << std::setprecision(3)
+        << "T - " << (texturing ? L"[вкл]выкл" : L"вкл[выкл]") << L" текстур\n"
         << "L - " << (lightning ? L"[вкл]выкл" : L"вкл[выкл]") << L" освещение\n"
         << "A - " << (alpha ? L"[вкл]выкл" : L"вкл[выкл]") << L" альфа-наложение\n"
-        << L"F - переместить свет в позицию камеры\n"
+        << L"M - " << (animateSea ? L"[вкл]выкл" : L"вкл[выкл]") << L" анимация волн\n"
+        << L"F - свет в позицию камеры\n"
         << L"G - двигать свет по горизонтали\n"
         << L"G+ЛКМ - двигать свет по вертикали\n"
-        << L"Координаты света: (" << std::setw(7) << light.x() << "," << std::setw(7) << light.y() << "," << std::setw(7)
-        << light.z() << ")\n"
-        << L"Координаты камеры: (" << std::setw(7) << camera.x() << "," << std::setw(7) << camera.y() << ","
-        << std::setw(7) << camera.z() << ")\n"
-        << L"Параметры камеры: R=" << std::setw(7) << camera.distance() << ", fi1=" << std::setw(7) << camera.fi1()
+        << L"Свет: (" << std::setw(7) << light.x() << "," << std::setw(7) << light.y() << "," << std::setw(7) << light.z() << ")\n"
+        << L"Камера: (" << std::setw(7) << camera.x() << "," << std::setw(7) << camera.y() << "," << std::setw(7) << camera.z() << ")\n"
+        << L"R=" << std::setw(7) << camera.distance() << ", fi1=" << std::setw(7) << camera.fi1()
         << ", fi2=" << std::setw(7) << camera.fi2() << '\n'
         << L"delta_time: " << std::setprecision(5) << delta_time << std::endl;
 
@@ -492,95 +712,8 @@ void Render(double delta_time)
     text.setText(ss.str().c_str());
     text.Draw();
 
-    // Восстанавливаем матрицу проекции на перспективу, которую сохраняли ранее.
     glMatrixMode(GL_PROJECTION);
     glPopMatrix();
     glMatrixMode(GL_MODELVIEW);
     glPopMatrix();
-}
-
-void cylinder(double cx, double cy, double R, double h, int n)
-{
-    for (int i = 0; i < n; i++)
-    {
-        double t1 = 3.1415926 * i / n;
-        double t2 = 3.1415926 * (i + 1) / n;
-
-        double s1 = sin(t1);
-        double c1 = cos(t1);
-        double s2 = sin(t2);
-        double c2 = cos(t2);
-
-        double x1 = cx - R * (c1 * (dx / len) + s1 * nx);
-        double y1 = cy - R * (c1 * (dy / len) + s1 * ny);
-
-        double x2 = cx - R * (c2 * (dx / len) + s2 * nx);
-        double y2 = cy - R * (c2 * (dy / len) + s2 * ny);
-
-
-        glBegin(GL_QUADS);
-        glColor3d(0.18, 0.18, 0.81);
-        glVertex3d(x1, y1, 0);
-        glVertex3d(x2, y2, 0);
-        glVertex3d(x2, y2, h);
-        glVertex3d(x1, y1, h);
-        glEnd();
-    }
-
-    glBegin(GL_TRIANGLES);
-
-    for (int i = 0; i < n; i++)
-    {
-        double t1 = 3.1415926 * i / n;
-        double t2 = 3.1415926 * (i + 1) / n;
-
-        double x0 = cx;
-        double y0 = cy;
-        double s1 = sin(t1);
-        double c1 = cos(t1);
-        double s2 = sin(t2);
-        double c2 = cos(t2);
-
-        double x1 = cx - R * (c1 * (dx / len) + s1 * nx);
-        double y1 = cy - R * (c1 * (dy / len) + s1 * ny);
-
-        double x2 = cx - R * (c2 * (dx / len) + s2 * nx);
-        double y2 = cy - R * (c2 * (dy / len) + s2 * ny);
-
-        glColor3d(1, 1, 0);
-        glVertex3d(x0, y0, h);
-        glVertex3d(x1, y1, h);
-        glVertex3d(x2, y2, h);
-    }
-
-    glEnd();
-
-    glBegin(GL_TRIANGLES);
-
-    for (int i = 0; i < n; i++)
-    {
-        double t1 = 3.1415926 * i / n;
-        double t2 = 3.1415926 * (i + 1) / n;
-
-        double x0 = cx;
-        double y0 = cy;
-        double s1 = sin(t1);
-        double c1 = cos(t1);
-        double s2 = sin(t2);
-        double c2 = cos(t2);
-
-        double x1 = cx - R * (c1 * (dx / len) + s1 * nx);
-        double y1 = cy - R * (c1 * (dy / len) + s1 * ny);
-
-        double x2 = cx - R * (c2 * (dx / len) + s2 * nx);
-        double y2 = cy - R * (c2 * (dy / len) + s2 * ny);
-
-        glColor3d(0.8, 0.9, 0.9);
-        glVertex3d(x0, y0, 0);
-        glVertex3d(x1, y1, 0);
-        glVertex3d(x2, y2, 0);
-    }
-
-    glEnd();
-
 }
